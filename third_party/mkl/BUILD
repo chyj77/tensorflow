@@ -1,25 +1,33 @@
 licenses(["notice"])  # 3-Clause BSD
 
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
+
 config_setting(
-    name = "using_mkl",
-    values = {
-        "define": "using_mkl=true",
+    name = "build_with_mkl",
+    define_values = {
+        "build_with_mkl": "true",
     },
     visibility = ["//visibility:public"],
 )
 
 config_setting(
-    name = "using_mkl_lnx_x64",
+    name = "build_with_mkl_lnx_x64",
+    define_values = {
+        "build_with_mkl": "true",
+    },
     values = {
         "cpu": "k8",
-        "define": "using_mkl=true",
     },
     visibility = ["//visibility:public"],
 )
 
-load(
-    "//third_party/mkl:build_defs.bzl",
-    "if_mkl",
+config_setting(
+    name = "enable_mkl",
+    define_values = {
+        "enable_mkl": "true",
+        "build_with_mkl": "true",
+    },
+    visibility = ["//visibility:public"],
 )
 
 filegroup(
@@ -28,12 +36,13 @@ filegroup(
         "@org_tensorflow//tensorflow:linux_x86_64": [
             "@mkl_linux//:LICENSE",
         ],
-        "@org_tensorflow//tensorflow:darwin": [
+        "@org_tensorflow//tensorflow:macos": [
             "@mkl_darwin//:LICENSE",
         ],
         "@org_tensorflow//tensorflow:windows": [
             "@mkl_windows//:LICENSE",
         ],
+        "//conditions:default": [],
     }),
     visibility = ["//visibility:public"],
 )
@@ -46,7 +55,7 @@ cc_library(
             "@mkl_linux//:mkl_headers",
             "@mkl_linux//:mkl_libs_linux",
         ],
-        "@org_tensorflow//tensorflow:darwin": [
+        "@org_tensorflow//tensorflow:macos": [
             "@mkl_darwin//:mkl_headers",
             "@mkl_darwin//:mkl_libs_darwin",
         ],
@@ -54,5 +63,12 @@ cc_library(
             "@mkl_windows//:mkl_headers",
             "@mkl_windows//:mkl_libs_windows",
         ],
+        "//conditions:default": [],
     }),
+)
+
+bzl_library(
+    name = "build_defs_bzl",
+    srcs = ["build_defs.bzl"],
+    visibility = ["//visibility:public"],
 )

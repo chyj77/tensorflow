@@ -32,7 +32,8 @@ class ScopedAllocatorContainer : public core::RefCounted {
  public:
   // Establishes a reachable ScopedAllocator.
   Status AddScopedAllocator(
-      const Tensor& backing_tensor, int32 scope_id, const string& scope_name,
+      const Tensor& backing_tensor, int32 scope_id,
+      const std::string& scope_name,
       const gtl::ArraySlice<ScopedAllocator::Field>& fields,
       int32 expected_call_count);
 
@@ -66,13 +67,13 @@ class ScopedAllocatorContainer : public core::RefCounted {
         : field_index(ScopedAllocator::kBackingIndex),
           scoped_allocator(nullptr) {}
   };
-  std::unordered_map<int32, SAField> allocators_ GUARDED_BY(mu_);
+  std::unordered_map<int32, SAField> allocators_ TF_GUARDED_BY(mu_);
 };
 
 // At most one of these exists per device.
 class ScopedAllocatorMgr {
  public:
-  explicit ScopedAllocatorMgr(const string& device_name)
+  explicit ScopedAllocatorMgr(const std::string& device_name)
       : device_name_(device_name) {}
   ~ScopedAllocatorMgr();
 
@@ -81,7 +82,7 @@ class ScopedAllocatorMgr {
   // Establishes a reachable ScopedAllocator.
   Status AddScopedAllocator(
       const Tensor& backing_tensor, int64 step_id, int32 scope_id,
-      const string& scope_name,
+      const std::string& scope_name,
       const gtl::ArraySlice<ScopedAllocator::Field>& fields,
       int32 expected_call_count);
 
@@ -89,18 +90,21 @@ class ScopedAllocatorMgr {
 
   // Populate the bytes and offset members of Field.  Instance allocaters get
   // consecutive scope_id values following that of the base ScopedAllocator.
-  static void PopulateFields(int32 scope_id,
-                             const gtl::ArraySlice<TensorShape>& shapes,
-                             const DataType dtype,
-                             std::vector<ScopedAllocator::Field>* fields);
+  // Returns the total number of bytes required to be allocated in the
+  // backing tensor, for convenience.  (The same value can be obtained
+  // by summing offset and bytes in the last field.)
+  static size_t PopulateFields(int32 scope_id,
+                               const gtl::ArraySlice<TensorShape>& shapes,
+                               const DataType dtype,
+                               std::vector<ScopedAllocator::Field>* fields);
 
-  const string& device_name() const { return device_name_; }
+  const std::string& device_name() const { return device_name_; }
 
  private:
-  string device_name_;
+  std::string device_name_;
   mutex mu_;
   std::unordered_map<int64, ScopedAllocatorContainer*> per_step_map_
-      GUARDED_BY(mu_);
+      TF_GUARDED_BY(mu_);
 };
 
 }  // namespace tensorflow

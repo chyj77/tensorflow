@@ -14,10 +14,13 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/core/platform/cloud/curl_http_request.h"
+
 #include <fstream>
+#include <string>
+
 #include "tensorflow/core/lib/core/status_test_util.h"
-#include "tensorflow/core/lib/io/path.h"
 #include "tensorflow/core/platform/mem.h"
+#include "tensorflow/core/platform/path.h"
 #include "tensorflow/core/platform/test.h"
 
 namespace tensorflow {
@@ -29,7 +32,7 @@ class FakeEnv : public EnvWrapper {
  public:
   FakeEnv() : EnvWrapper(Env::Default()) {}
 
-  uint64 NowSeconds() override { return now_; }
+  uint64 NowSeconds() const override { return now_; }
   uint64 now_ = 10000;
 };
 
@@ -92,6 +95,9 @@ class FakeLibCurl : public LibCurl {
       case CURLOPT_ERRORBUFFER:
         error_buffer_ = reinterpret_cast<char*>(param);
         break;
+      case CURLOPT_CAINFO:
+        ca_info_ = reinterpret_cast<char*>(param);
+        break;
       case CURLOPT_WRITEDATA:
         write_data_ = reinterpret_cast<FILE*>(param);
         break;
@@ -149,8 +155,12 @@ class FakeLibCurl : public LibCurl {
       } while (bytes_read > 0);
     }
     if (write_data_ || write_callback_) {
-      write_callback_(response_content_.c_str(), 1, response_content_.size(),
-                      write_data_);
+      size_t bytes_handled = write_callback_(
+          response_content_.c_str(), 1, response_content_.size(), write_data_);
+      // Mimic real libcurl behavior by checking write callback return value.
+      if (bytes_handled != response_content_.size()) {
+        curl_easy_perform_result_ = CURLE_WRITE_ERROR;
+      }
     }
     for (const auto& header : response_headers_) {
       header_callback_(header.c_str(), 1, header.size(), header_data_);
@@ -219,10 +229,6 @@ class FakeLibCurl : public LibCurl {
   }
   void curl_free(void* p) override { port::Free(p); }
 
-  const char* curl_easy_strerror(CURLcode errornum) override {
-    return "<unimplemented>";
-  }
-
   // Variables defining the behavior of this fake.
   string response_content_;
   uint64 response_code_;
@@ -232,6 +238,7 @@ class FakeLibCurl : public LibCurl {
   string url_;
   string range_;
   string custom_request_;
+  string ca_info_;
   char* error_buffer_ = nullptr;
   bool is_initialized_ = false;
   bool is_cleaned_up_ = false;
@@ -281,6 +288,7 @@ TEST(CurlHttpRequestTest, GetRequest) {
   EXPECT_EQ("http://www.testuri.com", libcurl.url_);
   EXPECT_EQ("100-199", libcurl.range_);
   EXPECT_EQ("", libcurl.custom_request_);
+  EXPECT_EQ("", libcurl.ca_info_);
   EXPECT_EQ(1, libcurl.headers_->size());
   EXPECT_EQ("Authorization: Bearer fake-bearer", (*libcurl.headers_)[0]);
   EXPECT_FALSE(libcurl.is_post_);
@@ -302,7 +310,7 @@ TEST(CurlHttpRequestTest, GetRequest_Direct) {
   string expected_response = "get response";
   size_t response_bytes_transferred =
       http_request.GetResultBufferDirectBytesTransferred();
-  EXPECT_EQ(response_bytes_transferred, expected_response.size());
+  EXPECT_EQ(expected_response.size(), response_bytes_transferred);
   EXPECT_EQ(
       "get response",
       string(scratch.begin(), scratch.begin() + response_bytes_transferred));
@@ -312,10 +320,83 @@ TEST(CurlHttpRequestTest, GetRequest_Direct) {
   EXPECT_EQ("http://www.testuri.com", libcurl.url_);
   EXPECT_EQ("100-199", libcurl.range_);
   EXPECT_EQ("", libcurl.custom_request_);
+  EXPECT_EQ("", libcurl.ca_info_);
   EXPECT_EQ(1, libcurl.headers_->size());
   EXPECT_EQ("Authorization: Bearer fake-bearer", (*libcurl.headers_)[0]);
   EXPECT_FALSE(libcurl.is_post_);
   EXPECT_EQ(200, http_request.GetResponseCode());
+}
+
+TEST(CurlHttpRequestTest, GetRequest_CustomCaInfoFlag) {
+  static char set_var[] = "CURL_CA_BUNDLE=test";
+  putenv(set_var);
+  FakeLibCurl libcurl("get response", 200);
+  CurlHttpRequest http_request(&libcurl);
+
+  std::vector<char> scratch;
+  scratch.insert(scratch.begin(), kTestContent.begin(), kTestContent.end());
+  scratch.reserve(100);
+
+  http_request.SetUri("http://www.testuri.com");
+  http_request.AddAuthBearerHeader("fake-bearer");
+  http_request.SetRange(100, 199);
+  http_request.SetResultBuffer(&scratch);
+  TF_EXPECT_OK(http_request.Send());
+
+  EXPECT_EQ("get response", string(scratch.begin(), scratch.end()));
+
+  // Check interactions with libcurl.
+  EXPECT_TRUE(libcurl.is_initialized_);
+  EXPECT_EQ("http://www.testuri.com", libcurl.url_);
+  EXPECT_EQ("100-199", libcurl.range_);
+  EXPECT_EQ("", libcurl.custom_request_);
+  EXPECT_EQ("test", libcurl.ca_info_);
+  EXPECT_EQ(1, libcurl.headers_->size());
+  EXPECT_EQ("Authorization: Bearer fake-bearer", (*libcurl.headers_)[0]);
+  EXPECT_FALSE(libcurl.is_post_);
+  EXPECT_EQ(200, http_request.GetResponseCode());
+}
+
+TEST(CurlHttpRequestTest, GetRequest_Direct_ResponseTooLarge) {
+  FakeLibCurl libcurl("get response", 200);
+  CurlHttpRequest http_request(&libcurl);
+
+  std::vector<char> scratch(5, 0);
+
+  http_request.SetUri("http://www.testuri.com");
+  http_request.SetResultBufferDirect(scratch.data(), scratch.size());
+  const Status& status = http_request.Send();
+  EXPECT_EQ(error::FAILED_PRECONDITION, status.code());
+  EXPECT_EQ(
+      "Error executing an HTTP request: libcurl code 23 meaning "
+      "'Failed writing received data to disk/application', error details: "
+      "Received 12 response bytes for a 5-byte buffer",
+      status.error_message());
+
+  // As long as the request clearly fails, ok to leave truncated response here.
+  EXPECT_EQ(5, http_request.GetResultBufferDirectBytesTransferred());
+  EXPECT_EQ("get r", string(scratch.begin(), scratch.begin() + 5));
+}
+
+TEST(CurlHttpRequestTest, GetRequest_Direct_RangeOutOfBound) {
+  FakeLibCurl libcurl("get response", 416);
+  CurlHttpRequest http_request(&libcurl);
+
+  const string initialScratch = "abcde";
+  std::vector<char> scratch;
+  scratch.insert(scratch.end(), initialScratch.begin(), initialScratch.end());
+
+  http_request.SetUri("http://www.testuri.com");
+  http_request.SetRange(0, 4);
+  http_request.SetResultBufferDirect(scratch.data(), scratch.size());
+  TF_EXPECT_OK(http_request.Send());
+  EXPECT_EQ(416, http_request.GetResponseCode());
+
+  // Some servers (in particular, GCS) return an error message payload with a
+  // 416 Range Not Satisfiable response. We should pretend it's not there when
+  // reporting bytes transferred, but it's ok if it writes to scratch.
+  EXPECT_EQ(0, http_request.GetResultBufferDirectBytesTransferred());
+  EXPECT_EQ("get r", string(scratch.begin(), scratch.end()));
 }
 
 TEST(CurlHttpRequestTest, GetRequest_Empty) {
@@ -357,28 +438,26 @@ TEST(CurlHttpRequestTest, GetRequest_RangeOutOfBound) {
   http_request.SetResultBuffer(&scratch);
   TF_EXPECT_OK(http_request.Send());
 
+  // Some servers (in particular, GCS) return an error message payload with a
+  // 416 Range Not Satisfiable response. We should pretend it's not there.
   EXPECT_TRUE(scratch.empty());
   EXPECT_EQ(416, http_request.GetResponseCode());
 }
 
 TEST(CurlHttpRequestTest, GetRequest_503) {
   FakeLibCurl libcurl("get response", 503);
-  libcurl.curl_easy_perform_result_ = CURLE_WRITE_ERROR;
   CurlHttpRequest http_request(&libcurl);
 
   std::vector<char> scratch;
   scratch.insert(scratch.end(), kTestContent.begin(), kTestContent.end());
 
   http_request.SetUri("http://www.testuri.com");
-  http_request.AddAuthBearerHeader("fake-bearer");
-  http_request.SetRange(100, 199);
   http_request.SetResultBuffer(&scratch);
   const auto& status = http_request.Send();
   EXPECT_EQ(error::UNAVAILABLE, status.code());
   EXPECT_EQ(
-      "Error executing an HTTP request (error code 23, error message 'Failed "
-      "writing received data to disk/application')\n\tPerforming request. "
-      "Detailed error: ",
+      "Error executing an HTTP request: HTTP response code 503 with body "
+      "'get response'",
       status.error_message());
 }
 
@@ -395,9 +474,50 @@ TEST(CurlHttpRequestTest, GetRequest_HttpCode0) {
   const auto& status = http_request.Send();
   EXPECT_EQ(error::UNAVAILABLE, status.code());
   EXPECT_EQ(
-      "Error executing an HTTP request (error code 28, error message 'Timeout "
-      "was reached')\n\tPerforming request. Detailed error: Operation timed "
-      "out",
+      "Error executing an HTTP request: libcurl code 28 meaning "
+      "'Timeout was reached', error details: Operation timed out",
+      status.error_message());
+  EXPECT_EQ(0, http_request.GetResponseCode());
+}
+
+TEST(CurlHttpRequestTest, GetRequest_CouldntResolveHost) {
+  FakeLibCurl libcurl("get response", 0);
+  libcurl.curl_easy_perform_result_ = CURLE_COULDNT_RESOLVE_HOST;
+  libcurl.curl_easy_perform_error_message_ =
+      "Could not resolve host 'metadata'";
+  CurlHttpRequest http_request(&libcurl);
+
+  std::vector<char> scratch;
+  scratch.insert(scratch.end(), kTestContent.begin(), kTestContent.end());
+
+  http_request.SetUri("http://metadata");
+  const auto& status = http_request.Send();
+  EXPECT_EQ(error::FAILED_PRECONDITION, status.code());
+  EXPECT_EQ(
+      "Error executing an HTTP request: libcurl code 6 meaning "
+      "'Couldn't resolve host name', error details: Could not resolve host "
+      "'metadata'",
+      status.error_message());
+  EXPECT_EQ(0, http_request.GetResponseCode());
+}
+
+TEST(CurlHttpRequestTest, GetRequest_SslBadCertfile) {
+  FakeLibCurl libcurl("get response", 0);
+  libcurl.curl_easy_perform_result_ = CURLE_SSL_CACERT_BADFILE;
+  libcurl.curl_easy_perform_error_message_ =
+      "error setting certificate verify locations:";
+  CurlHttpRequest http_request(&libcurl);
+
+  std::vector<char> scratch;
+  scratch.insert(scratch.end(), kTestContent.begin(), kTestContent.end());
+
+  http_request.SetUri("http://metadata");
+  const auto& status = http_request.Send();
+  EXPECT_EQ(error::FAILED_PRECONDITION, status.code());
+  EXPECT_EQ(
+      "Error executing an HTTP request: libcurl code 77 meaning "
+      "'Problem with the SSL CA cert (path? access rights?)', error details: "
+      "error setting certificate verify locations:",
       status.error_message());
   EXPECT_EQ(0, http_request.GetResponseCode());
 }
@@ -630,9 +750,8 @@ TEST(CurlHttpRequestTest, ProgressIsStuck) {
   auto status = http_request.Send();
   EXPECT_EQ(error::UNAVAILABLE, status.code());
   EXPECT_EQ(
-      "Error executing an HTTP request (error code 42, error message "
-      "'Operation was aborted by an application callback')\n\tPerforming "
-      "request. Detailed error: ",
+      "Error executing an HTTP request: libcurl code 42 meaning 'Operation "
+      "was aborted by an application callback', error details: (none)",
       status.error_message());
 }
 

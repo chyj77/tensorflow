@@ -15,8 +15,9 @@ limitations under the License.
 
 #include <tuple>
 
-#include "tensorflow/core/platform/denormal.h"
+#include "tensorflow/core/platform/byte_order.h"
 #include "tensorflow/core/platform/cpu_info.h"
+#include "tensorflow/core/platform/denormal.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/platform.h"
 // If we're on gcc 4.8 or older, there's a known bug that prevents the use of
@@ -56,7 +57,7 @@ static void SetDenormalState(bool flush_zero_mode, bool denormals_zero_mode) {
 #endif
 }
 
-static std::pair<bool, bool> GetDernormalState() {
+static std::pair<bool, bool> GetDenormalState() {
   // For now, we flush denormals only on SSE 3.  Other architectures such as ARM
   // can be added as needed.
 
@@ -73,7 +74,7 @@ static std::pair<bool, bool> GetDernormalState() {
 }
 
 ScopedRestoreFlushDenormalState::ScopedRestoreFlushDenormalState() {
-  std::tie(flush_zero_mode_, denormals_zero_mode_) = GetDernormalState();
+  std::tie(flush_zero_mode_, denormals_zero_mode_) = GetDenormalState();
 }
 
 ScopedRestoreFlushDenormalState::~ScopedRestoreFlushDenormalState() {

@@ -27,7 +27,6 @@ limitations under the License.
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/graph/algorithm.h"
 #include "tensorflow/core/graph/graph.h"
-#include "tensorflow/core/graph/graph_constructor.h"
 #include "tensorflow/core/graph/tensor_id.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status.h"
@@ -81,7 +80,9 @@ Status FeedInputs(
 
     // Update name_index
     (*name_index)[feed_node->name()] = feed_node;
-    g->AddControlEdge(g->source_node(), feed_node);
+    // Duplicate control edges aren't allowed, but feed_node was *just* created
+    // so there's no need to check for a duplicate.
+    g->AddControlEdge(g->source_node(), feed_node, true);
 
     // Look through edges coming out of "n" for edges whose src_output() index
     // matches "output_index".  If found, replace the edges with a connection
@@ -107,7 +108,9 @@ Status FeedInputs(
         g->AddEdge(feed_node, 0, e->dst(), e->dst_input());
       } else {
         CHECK_EQ(Graph::kControlSlot, e->src_output());
-        g->AddControlEdge(feed_node, e->dst());
+        // Duplicate control edges aren't allowed, but feed_node was *just*
+        // created so there's no need to check for a duplicate.
+        g->AddControlEdge(feed_node, e->dst(), true);
       }
       g->RemoveEdge(e);
     }
@@ -160,7 +163,9 @@ Status FetchOutputs(
     // Update the index.
     (*name_index)[fetch_node->name()] = fetch_node;
 
-    g->AddControlEdge(fetch_node, g->sink_node());
+    // Duplicate control edges aren't allowed, but fetch_node was *just* created
+    // so there's no need to check for a duplicate.
+    g->AddControlEdge(fetch_node, g->sink_node(), true);
     out_fetch_nodes->push_back(fetch_node);
     out_fetch_types->push_back(BaseType(n->output_type(id.second)));
   }
@@ -201,7 +206,7 @@ Status PruneForTargets(Graph* g, const NameIndex& name_index,
     return errors::NotFound("PruneForTargets: Some target nodes not found: ",
                             not_found);
   }
-  PruneForReverseReachability(g, targets);
+  PruneForReverseReachability(g, std::move(targets));
 
   // Reconnect nodes with no outgoing edges to the sink node
   FixupSourceAndSinkEdges(g);
@@ -223,7 +228,7 @@ Status ArgFeedRewrite::AddNode(Graph* g, NodeBuilder::NodeOut feed_tensor,
                   "_Arg")
           .Attr("T", BaseType(feed_tensor.node->output_type(feed_tensor.index)))
           .Attr("index", arg_index_)
-          .Finalize(g, out_node));
+          .Finalize(g, out_node, /*consume=*/true));
   (*out_node)->set_assigned_device_name(device_info().name());
   return Status::OK();
 }
@@ -242,7 +247,7 @@ Status RecvFeedRewrite::AddNode(Graph* g, NodeBuilder::NodeOut feed_tensor,
           .Attr("send_device_incarnation",
                 static_cast<int64>(device_info().incarnation()))
           .Attr("client_terminated", true)
-          .Finalize(g, out_node));
+          .Finalize(g, out_node, /*consume=*/true));
 
   (*out_node)->set_assigned_device_name(device_info().name());
   return Status::OK();
@@ -262,7 +267,7 @@ Status RetvalFetchRewrite::AddNode(Graph* g, NodeBuilder::NodeOut fetch_tensor,
           .Attr("T",
                 BaseType(fetch_tensor.node->output_type(fetch_tensor.index)))
           .Attr("index", retval_index_)
-          .Finalize(g, out_node));
+          .Finalize(g, out_node, /*consume=*/true));
   (*out_node)->set_assigned_device_name(device_info().name());
   return Status::OK();
 }
@@ -280,7 +285,7 @@ Status SendFetchRewrite::AddNode(Graph* g, NodeBuilder::NodeOut fetch_tensor,
           .Attr("send_device_incarnation",
                 static_cast<int64>(device_info().incarnation()))
           .Attr("client_terminated", true)
-          .Finalize(g, out_node));
+          .Finalize(g, out_node, /*consume=*/true));
   (*out_node)->set_assigned_device_name(device_info().name());
   return Status::OK();
 }

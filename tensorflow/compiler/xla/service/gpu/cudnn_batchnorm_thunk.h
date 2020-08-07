@@ -18,6 +18,7 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/service/buffer_assignment.h"
 #include "tensorflow/compiler/xla/service/gpu/buffer_allocations.h"
+#include "tensorflow/compiler/xla/service/gpu/hlo_execution_profiler.h"
 #include "tensorflow/compiler/xla/service/gpu/thunk.h"
 #include "tensorflow/compiler/xla/service/hlo_instruction.h"
 #include "tensorflow/compiler/xla/types.h"
@@ -45,24 +46,24 @@ namespace gpu {
 
 class CudnnBatchNormForwardInferenceThunk : public Thunk {
  public:
-  CudnnBatchNormForwardInferenceThunk(const BufferAllocation::Slice& operand,
+  CudnnBatchNormForwardInferenceThunk(ThunkInfo thunk_info,
+                                      const BufferAllocation::Slice& operand,
                                       const BufferAllocation::Slice& scale,
                                       const BufferAllocation::Slice& offset,
                                       const BufferAllocation::Slice& mean,
                                       const BufferAllocation::Slice& variance,
                                       float epsilon, int64 feature_index,
-                                      const BufferAllocation::Slice& output,
-                                      const HloInstruction* hlo);
+                                      const BufferAllocation::Slice& output);
 
   CudnnBatchNormForwardInferenceThunk(
       const CudnnBatchNormForwardInferenceThunk&) = delete;
   CudnnBatchNormForwardInferenceThunk& operator=(
       const CudnnBatchNormForwardInferenceThunk&) = delete;
 
-  Status ExecuteOnStream(const BufferAllocations& buffer_allocations,
-                         perftools::gputools::Stream* stream) override;
+  Status ExecuteOnStream(const ExecuteParams& params) override;
 
  private:
+  const HloInstruction* hlo_instruction_;
   BufferAllocation::Slice operand_;
   BufferAllocation::Slice scale_;
   BufferAllocation::Slice offset_;
@@ -76,23 +77,23 @@ class CudnnBatchNormForwardInferenceThunk : public Thunk {
 class CudnnBatchNormForwardTrainingThunk : public Thunk {
  public:
   CudnnBatchNormForwardTrainingThunk(
-      const BufferAllocation::Slice& operand,
+      ThunkInfo thunk_info, const BufferAllocation::Slice& operand,
       const BufferAllocation::Slice& scale,
       const BufferAllocation::Slice& offset, float epsilon, int64 feature_index,
       const BufferAllocation::Slice& output_data,
       const BufferAllocation::Slice& output_mean,
       const BufferAllocation::Slice& output_inv_stddev,
-      const BufferAllocation::Slice& output_tuple, const HloInstruction* hlo);
+      const BufferAllocation::Slice& output_tuple);
 
   CudnnBatchNormForwardTrainingThunk(
       const CudnnBatchNormForwardTrainingThunk&) = delete;
   CudnnBatchNormForwardTrainingThunk& operator=(
       const CudnnBatchNormForwardTrainingThunk&) = delete;
 
-  Status ExecuteOnStream(const BufferAllocations& buffer_allocations,
-                         perftools::gputools::Stream* stream) override;
+  Status ExecuteOnStream(const ExecuteParams& params) override;
 
  private:
+  const HloInstruction* hlo_instruction_;
   BufferAllocation::Slice operand_;
   BufferAllocation::Slice scale_;
   BufferAllocation::Slice offset_;
@@ -106,7 +107,8 @@ class CudnnBatchNormForwardTrainingThunk : public Thunk {
 
 class CudnnBatchNormBackwardThunk : public Thunk {
  public:
-  CudnnBatchNormBackwardThunk(const BufferAllocation::Slice& operand,
+  CudnnBatchNormBackwardThunk(ThunkInfo thunk_info,
+                              const BufferAllocation::Slice& operand,
                               const BufferAllocation::Slice& scale,
                               const BufferAllocation::Slice& mean,
                               const BufferAllocation::Slice& inv_stddev,
@@ -115,17 +117,16 @@ class CudnnBatchNormBackwardThunk : public Thunk {
                               const BufferAllocation::Slice& output_grad_data,
                               const BufferAllocation::Slice& output_grad_scale,
                               const BufferAllocation::Slice& output_grad_offset,
-                              const BufferAllocation::Slice& output_tuple,
-                              const HloInstruction* hlo);
+                              const BufferAllocation::Slice& output_tuple);
 
   CudnnBatchNormBackwardThunk(const CudnnBatchNormBackwardThunk&) = delete;
   CudnnBatchNormBackwardThunk& operator=(const CudnnBatchNormBackwardThunk&) =
       delete;
 
-  Status ExecuteOnStream(const BufferAllocations& buffer_allocations,
-                         perftools::gputools::Stream* stream) override;
+  Status ExecuteOnStream(const ExecuteParams& params) override;
 
  private:
+  const HloInstruction* hlo_instruction_;
   BufferAllocation::Slice operand_;
   BufferAllocation::Slice scale_;
   BufferAllocation::Slice mean_;
